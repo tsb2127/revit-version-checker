@@ -328,7 +328,8 @@ const S = {
   scanning:false,aborted:false,
   pct:0,msg:'',pdone:0,ptotal:0,
   expanded:new Set(),
-  search:'',statusFilter:'all',
+  search:'',statusFilter:['all'],
+  setupTab:'simple',
   sortCol:'risk',sortDir:-1,
   threshold:parseInt(localStorage.getItem('rvt_thresh')||'2021'),
   error:null
@@ -455,8 +456,7 @@ async function scanHub(hub) {
 
   let raw=[];
   try {
-    const d = await api('/project/v1/hubs/'+hub.id+'/projects');
-    raw = d.data||[];
+    raw = await loadProjectsForHub(hub.id);
   } catch(e) { S.error='Could not load projects: '+e.message; S.scanning=false; render(); return; }
 
   S.ptotal=raw.length;
@@ -492,6 +492,34 @@ async function scanHub(hub) {
   }
   S.scanning=false;
   render();
+}
+
+async function loadProjectsForHub(hubId) {
+  // Prefer ACC Admin API coverage (hub-wide project list), then fall back to DM projects API.
+  const accountId = hubId.replace(/^b\./,'');
+  const adminPaths = [
+    '/construction/admin/v1/accounts/'+accountId+'/projects',
+    '/hq/v1/accounts/'+accountId+'/projects'
+  ];
+  for (const basePath of adminPaths) {
+    try {
+      const all = [];
+      let offset = 0;
+      const limit = 200;
+      while (true) {
+        const path = `${basePath}?limit=${limit}&offset=${offset}`;
+        const d = await api(path);
+        const page = d.data || [];
+        all.push(...page.map(p => ({ id: p.id || p.projectId, attributes: { name: p.name || p.attributes?.name || p.projectName || p.id } })));
+        if (page.length < limit) break;
+        offset += limit;
+      }
+      if (all.length) return all;
+    } catch(e) { /* fallback */ }
+  }
+  // Fallback: standard projects endpoint (may be membership-scoped for some users)
+  const d = await api('/project/v1/hubs/'+hubId+'/projects');
+  return d.data || [];
 }
 
 function makeAccUrl(hubId, projectId) {
@@ -580,10 +608,15 @@ function rSetup() {
   const rcw = (sz='') => `<span class="type-pill tp-c4r" data-tip="Revit Cloud Workshared" style="${sz?'font-size:'+sz+';':''}"  >RCW</span>`;
   const rc  = (sz='') => `<span class="type-pill tp-cloud" data-tip="Revit Cloud Model" style="${sz?'font-size:'+sz+';':''}"  >RC</span>`;
 
-  return `<div class="setup-grid" style="display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start;max-width:1100px">
+  return `<div style="max-width:1100px">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn ${S.setupTab==='simple'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='simple';render()">Quick start</button>
+      <button class="btn ${S.setupTab==='instructions'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='instructions';render()">Instructions</button>
+    </div>
+    <div class="setup-grid" style="display:grid;grid-template-columns:${S.setupTab==='simple'?'1fr':'1fr 380px'};gap:20px;align-items:start">
 
     <!-- LEFT: explanation panel -->
-    <div>
+    <div style="${S.setupTab==='simple'?'display:none':''}">
       <h2 style="font-size:17px;font-weight:600;margin-bottom:5px">Revit Version Checker</h2>
       <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
         Scans every project in your ACC / Forma hub and separates
@@ -656,7 +689,7 @@ function rSetup() {
         <div style="font-size:13px;font-weight:600;margin-bottom:14px">Connect to your ACC hub</div>
 
         <!-- Step-by-step setup guide -->
-        <div style="display:flex;flex-direction:column;gap:0;margin-bottom:16px">
+        <div style="display:${S.setupTab==='instructions'?'flex':'none'};flex-direction:column;gap:0;margin-bottom:16px">
 
           <div style="display:flex;gap:10px;align-items:flex-start;padding-bottom:14px;border-bottom:0.5px solid var(--border)">
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">1</div>
@@ -671,7 +704,7 @@ function rSetup() {
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">2</div>
             <div>
               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">Add app to your ACC hub</div>
-              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Account Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
+              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Hub Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
             </div>
           </div>
 
@@ -713,8 +746,7 @@ function rSetup() {
         <div style="font-size:11px;color:rgba(245,160,159,0.75);line-height:1.75">This is an open-source tool built by an individual Autodesk employee, not an official Autodesk product. It has not undergone a security audit or Autodesk's internal app review process. Scope is <code style="background:rgba(0,0,0,0.2);padding:1px 3px;border-radius:3px">data:read</code> only. Source code is public at <a href="https://github.com/tsb2127/revit-version-checker" target="_blank" style="color:inherit;text-decoration:underline">GitHub</a> for your IT team to review. By signing in you accept these terms.</div>
       </div>
     </div>
-
-  </div>`;
+  </div></div>`;
 }
 
 function rHubs() {
@@ -742,7 +774,8 @@ function rDash() {
 
   let rows = [...S.projects];
   if (S.search) { const q=S.search.toLowerCase(); rows=rows.filter(p=>p.name.toLowerCase().includes(q)); }
-  if (S.statusFilter!=='all') rows=rows.filter(p=>pStatus(p)===S.statusFilter);
+  const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+  if (!activeStatuses.includes('all')) rows=rows.filter(p=>activeStatuses.includes(pStatus(p)));
   rows.sort((a,b)=>{
     let av,bv;
     if      (S.sortCol==='name')  { av=a.name; bv=b.name; }
@@ -799,14 +832,15 @@ function rDash() {
             <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.7 10.3a6.5 6.5 0 10-1.4 1.4l3.85 3.85a1 1 0 001.4-1.4l-3.85-3.85zM6.5 11a4.5 4.5 0 110-9 4.5 4.5 0 010 9z"/></svg>
             <input class="sinput" placeholder="Search projects…" value="${esc(S.search)}" oninput="S.search=this.value;render()"/>
           </div>
-          <select class="fsel" onchange="S.statusFilter=this.value;render()">
-            <option value="all">All statuses</option>
-            <option value="critical" ${S.statusFilter==='critical'?'selected':''}>Critical (at risk)</option>
-            <option value="warn"     ${S.statusFilter==='warn'?'selected':''}>Outdated</option>
-            <option value="ok"       ${S.statusFilter==='ok'?'selected':''}>Current</option>
-            <option value="no-c4r"   ${S.statusFilter==='no-c4r'?'selected':''}>No workshared files</option>
+          <select class="fsel" multiple size="1" title="Ctrl/Cmd+click to select multiple statuses" onchange="S.statusFilter=[...this.selectedOptions].map(o=>o.value);if(!S.statusFilter.length)S.statusFilter=['all'];if(S.statusFilter.includes('all')&&S.statusFilter.length>1)S.statusFilter=S.statusFilter.filter(v=>v!=='all');render()">
+            <option value="all" ${S.statusFilter.includes('all')?'selected':''}>All statuses</option>
+            <option value="critical" ${S.statusFilter.includes('critical')?'selected':''}>Critical (at risk)</option>
+            <option value="warn"     ${S.statusFilter.includes('warn')?'selected':''}>Outdated</option>
+            <option value="ok"       ${S.statusFilter.includes('ok')?'selected':''}>Current</option>
+            <option value="no-c4r"   ${S.statusFilter.includes('no-c4r')?'selected':''}>No workshared files</option>
           </select>
           <button class="btn btn-g btn-sm" onclick="exportCsv()">Export CSV</button>
+          <button class="btn btn-g btn-sm" onclick="exportPdf()">Export PDF</button>
           <button class="btn btn-g btn-sm" onclick="S.phase='hubs';render()">Change hub</button>
         </div>
       </div>
@@ -1025,6 +1059,40 @@ window.exportCsv = () => {
   a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv);
   a.download='revit-hub-scan-'+new Date().toISOString().slice(0,10)+'.csv';
   a.click();
+};
+
+window.exportPdf = () => {
+  const rows = [...S.projects];
+  const filtered = rows.filter(p => {
+    if (S.search && !p.name.toLowerCase().includes(S.search.toLowerCase())) return false;
+    const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+    if (!activeStatuses.includes('all') && !activeStatuses.includes(pStatus(p))) return false;
+    return true;
+  });
+  const printedOn = new Date().toLocaleString();
+  const html = `
+  <html><head><title>Revit Hub Scan Report</title>
+  <style>
+    body{font-family:Arial,sans-serif;padding:24px;color:#111} h1{margin:0 0 8px} .meta{color:#555;margin-bottom:16px}
+    table{width:100%;border-collapse:collapse;font-size:12px} th,td{border:1px solid #ccc;padding:6px;text-align:left}
+    th{background:#f3f3f3} .section{margin-top:22px}
+  </style></head><body>
+    <h1>Revit Version Checker Report</h1>
+    <div class="meta">Generated: ${esc(printedOn)} | Threshold: ${S.threshold} | Filter: ${(Array.isArray(S.statusFilter)?S.statusFilter:[S.statusFilter]).join(', ')}</div>
+    <table><thead><tr><th>Project</th><th>C4R Version</th><th>C4R Files</th><th>At Risk</th><th>Cloud Files</th><th>Status</th><th>Last Modified</th></tr></thead>
+    <tbody>
+      ${filtered.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.c4rVersion||'—')}</td><td>${p.c4rCount||0}</td><td>${p.atRisk||0}</td><td>${p.cloudCount||0}</td><td>${esc(pStatus(p))}</td><td>${fDate(p.lastMod)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="section"><h3>Critical project details</h3>
+      ${filtered.filter(p=>pStatus(p)==='critical').map(p=>`<p><strong>${esc(p.name)}</strong>: ${p.atRisk||0} at-risk RCW model(s)</p>`).join('') || '<p>None</p>'}
+    </div>
+  </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w) return alert('Pop-up blocked. Please allow pop-ups to export PDF.');
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  w.print();
 };
 
 // ─── OAUTH CALLBACK HANDLER ───────────────────────────────────────────────────

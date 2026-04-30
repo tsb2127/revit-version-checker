@@ -65,7 +65,8 @@ The version is only shown and counted for RCW files. RC files are surfaced separ
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /project/v1/hubs` | List ACC hubs |
-| `GET /project/v1/hubs/{hubId}/projects` | List all projects in hub |
+| `GET /construction/admin/v1/accounts/{accountId}/projects` (preferred) | Hub-wide project list for hub admins |
+| `GET /project/v1/hubs/{hubId}/projects` (fallback) | List projects visible through Data Management API |
 | `GET /project/v1/hubs/{hubId}/projects/{projectId}/topFolders` | Get root folders |
 | `GET /data/v1/projects/{projectId}/folders/{folderId}/contents` | Recurse folder tree |
 | `GET /data/v1/projects/{projectId}/items/{itemId}/versions` | Read version + type metadata |
@@ -82,7 +83,7 @@ Each user connects using their own APS app credentials. This means the app works
 
 1. **An APS app** — create one at [aps.autodesk.com](https://aps.autodesk.com) (free). Select **Desktop, Mobile, Single-Page App** as the type — not Traditional Web App
 2. **Your GitHub Pages URL set as the Callback URL** in the app settings
-3. **Your app added as a Custom Integration** in ACC Account Admin
+3. **Your app added as a Custom Integration** in ACC Hub Admin
 
 Full step-by-step instructions are built into the app's connect screen.
 
@@ -162,7 +163,7 @@ If your organisation has strict policies about third-party OAuth applications ac
 
 - `revitProjectVersion` is only populated for **Revit Cloud Workshared** models. RC (non-workshared) uploads do not have a version lock and are not counted toward risk.
 - Large hubs with hundreds of projects and thousands of files will make many API calls and may take several minutes to scan. The APS Data Management API is free with no per-call cost.
-- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub. The connect screen walks through this in 3 steps.
+- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub (via Hub Admin). The connect screen walks through this in 3 steps.
 - Tokens expire after 1 hour — sign in again when prompted.
 - The app requires the APS app to be of type **Single-Page App** (not Traditional Web App) to support PKCE. Traditional Web App types will fail authentication.
 
