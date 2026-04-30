@@ -329,6 +329,7 @@ const S = {
   pct:0,msg:'',pdone:0,ptotal:0,
   expanded:new Set(),
   search:'',statusFilter:['all'],
+  setupTab:'simple',
   sortCol:'risk',sortDir:-1,
   threshold:parseInt(localStorage.getItem('rvt_thresh')||'2021'),
   error:null
@@ -455,8 +456,7 @@ async function scanHub(hub) {
 
   let raw=[];
   try {
-    const d = await api('/project/v1/hubs/'+hub.id+'/projects');
-    raw = d.data||[];
+    raw = await loadProjectsForHub(hub.id);
   } catch(e) { S.error='Could not load projects: '+e.message; S.scanning=false; render(); return; }
 
   S.ptotal=raw.length;
@@ -492,6 +492,34 @@ async function scanHub(hub) {
   }
   S.scanning=false;
   render();
+}
+
+async function loadProjectsForHub(hubId) {
+  // Prefer ACC Admin API coverage (hub-wide project list), then fall back to DM projects API.
+  const accountId = hubId.replace(/^b\./,'');
+  const adminPaths = [
+    '/construction/admin/v1/accounts/'+accountId+'/projects',
+    '/hq/v1/accounts/'+accountId+'/projects'
+  ];
+  for (const basePath of adminPaths) {
+    try {
+      const all = [];
+      let offset = 0;
+      const limit = 200;
+      while (true) {
+        const path = `${basePath}?limit=${limit}&offset=${offset}`;
+        const d = await api(path);
+        const page = d.data || [];
+        all.push(...page.map(p => ({ id: p.id || p.projectId, attributes: { name: p.name || p.attributes?.name || p.projectName || p.id } })));
+        if (page.length < limit) break;
+        offset += limit;
+      }
+      if (all.length) return all;
+    } catch(e) { /* fallback */ }
+  }
+  // Fallback: standard projects endpoint (may be membership-scoped for some users)
+  const d = await api('/project/v1/hubs/'+hubId+'/projects');
+  return d.data || [];
 }
 
 function makeAccUrl(hubId, projectId) {
@@ -580,10 +608,15 @@ function rSetup() {
   const rcw = (sz='') => `<span class="type-pill tp-c4r" data-tip="Revit Cloud Workshared" style="${sz?'font-size:'+sz+';':''}"  >RCW</span>`;
   const rc  = (sz='') => `<span class="type-pill tp-cloud" data-tip="Revit Cloud Model" style="${sz?'font-size:'+sz+';':''}"  >RC</span>`;
 
-  return `<div class="setup-grid" style="display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start;max-width:1100px">
+  return `<div style="max-width:1100px">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn ${S.setupTab==='simple'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='simple';render()">Quick start</button>
+      <button class="btn ${S.setupTab==='instructions'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='instructions';render()">Instructions</button>
+    </div>
+    <div class="setup-grid" style="display:grid;grid-template-columns:${S.setupTab==='simple'?'1fr':'1fr 380px'};gap:20px;align-items:start">
 
     <!-- LEFT: explanation panel -->
-    <div>
+    <div style="${S.setupTab==='simple'?'display:none':''}">
       <h2 style="font-size:17px;font-weight:600;margin-bottom:5px">Revit Version Checker</h2>
       <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
         Scans every project in your ACC / Forma hub and separates
@@ -656,7 +689,7 @@ function rSetup() {
         <div style="font-size:13px;font-weight:600;margin-bottom:14px">Connect to your ACC hub</div>
 
         <!-- Step-by-step setup guide -->
-        <div style="display:flex;flex-direction:column;gap:0;margin-bottom:16px">
+        <div style="display:${S.setupTab==='instructions'?'flex':'none'};flex-direction:column;gap:0;margin-bottom:16px">
 
           <div style="display:flex;gap:10px;align-items:flex-start;padding-bottom:14px;border-bottom:0.5px solid var(--border)">
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">1</div>
@@ -671,7 +704,7 @@ function rSetup() {
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">2</div>
             <div>
               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">Add app to your ACC hub</div>
-              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Account Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
+              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Hub Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
             </div>
           </div>
 
@@ -713,8 +746,7 @@ function rSetup() {
         <div style="font-size:11px;color:rgba(245,160,159,0.75);line-height:1.75">This is an open-source tool built by an individual Autodesk employee, not an official Autodesk product. It has not undergone a security audit or Autodesk's internal app review process. Scope is <code style="background:rgba(0,0,0,0.2);padding:1px 3px;border-radius:3px">data:read</code> only. Source code is public at <a href="https://github.com/tsb2127/revit-version-checker" target="_blank" style="color:inherit;text-decoration:underline">GitHub</a> for your IT team to review. By signing in you accept these terms.</div>
       </div>
     </div>
-
-  </div>`;
+  </div></div>`;
 }
 
 function rHubs() {
