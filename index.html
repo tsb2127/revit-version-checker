@@ -328,7 +328,12 @@ const S = {
   scanning:false,aborted:false,
   pct:0,msg:'',pdone:0,ptotal:0,
   expanded:new Set(),
-  search:'',statusFilter:'all',
+  search:'',statusFilter:['all'],
+  setupTab:'simple',
+  exportFiltered:true,
+  coverageMode:'unknown',
+  scanStats:{apiCalls:0,retries:0,throttles:0},
+  projectConcurrency:4,
   sortCol:'risk',sortDir:-1,
   threshold:parseInt(localStorage.getItem('rvt_thresh')||'2021'),
   error:null
@@ -339,9 +344,20 @@ const fDate = iso => iso ? new Date(iso).toLocaleDateString('en-US',{month:'shor
 const isAtRisk = v => v && parseInt(v) <= S.threshold;
 
 async function api(path) {
-  const r = await fetch(APS + path, {headers:{Authorization:'Bearer '+S.token}});
-  if (!r.ok) throw new Error(r.status+' '+r.statusText);
-  return r.json();
+  const maxRetries = 3;
+  for (let attempt=0; attempt<=maxRetries; attempt++) {
+    S.scanStats.apiCalls++;
+    const r = await fetch(APS + path, {headers:{Authorization:'Bearer '+S.token}});
+    if (r.ok) return r.json();
+    if ((r.status===429 || r.status>=500) && attempt<maxRetries) {
+      S.scanStats.retries++;
+      if (r.status===429) S.scanStats.throttles++;
+      const waitMs = 400 * Math.pow(2, attempt);
+      await new Promise(res=>setTimeout(res, waitMs));
+      continue;
+    }
+    throw new Error(r.status+' '+r.statusText);
+  }
 }
 
 function vClass(v, gl) {
@@ -451,12 +467,12 @@ function deriveProject(p) {
 async function scanHub(hub) {
   S.hub=hub; S.projects=[]; S.scanning=true; S.aborted=false;
   S.pct=0; S.pdone=0; S.error=null; S.phase='dash';
+  S.scanStats={apiCalls:0,retries:0,throttles:0};
   render();
 
   let raw=[];
   try {
-    const d = await api('/project/v1/hubs/'+hub.id+'/projects');
-    raw = d.data||[];
+    raw = await loadProjectsForHub(hub.id);
   } catch(e) { S.error='Could not load projects: '+e.message; S.scanning=false; render(); return; }
 
   S.ptotal=raw.length;
@@ -469,9 +485,8 @@ async function scanHub(hub) {
   }));
   render();
 
-  for (let i=0; i<S.projects.length; i++) {
-    if (S.aborted) break;
-    const proj = S.projects[i];
+  async function scanOneProject(proj, idx) {
+    if (S.aborted) return;
     S.msg = proj.name;
     render();
     try {
@@ -486,12 +501,49 @@ async function scanHub(hub) {
     } catch(e) { proj.c4rFiles=[]; proj.cloudFiles=[]; }
     deriveProject(proj);
     proj.scanning=false;
-    S.pdone=i+1;
-    S.pct=Math.round(((i+1)/S.projects.length)*100);
+    S.pdone+=1;
+    S.pct=Math.round((S.pdone/S.projects.length)*100);
     render();
   }
+  let cursor = 0;
+  const workers = Array.from({length:Math.max(1, S.projectConcurrency)}, async () => {
+    while (!S.aborted && cursor < S.projects.length) {
+      const idx = cursor++;
+      await scanOneProject(S.projects[idx], idx);
+    }
+  });
+  await Promise.all(workers);
   S.scanning=false;
   render();
+}
+
+async function loadProjectsForHub(hubId) {
+  // Prefer ACC Admin API coverage (hub-wide project list), then fall back to DM projects API.
+  const accountId = hubId.replace(/^b\./,'');
+  const adminPaths = [
+    '/construction/admin/v1/accounts/'+accountId+'/projects',
+    '/hq/v1/accounts/'+accountId+'/projects'
+  ];
+  for (const basePath of adminPaths) {
+    try {
+      const all = [];
+      let offset = 0;
+      const limit = 200;
+      while (true) {
+        const path = `${basePath}?limit=${limit}&offset=${offset}`;
+        const d = await api(path);
+        const page = d.data || [];
+        all.push(...page.map(p => ({ id: p.id || p.projectId, attributes: { name: p.name || p.attributes?.name || p.projectName || p.id } })));
+        if (page.length < limit) break;
+        offset += limit;
+      }
+      if (all.length) { S.coverageMode='hub-admin'; return all; }
+    } catch(e) { /* fallback */ }
+  }
+  // Fallback: standard projects endpoint (may be membership-scoped for some users)
+  const d = await api('/project/v1/hubs/'+hubId+'/projects');
+  S.coverageMode='membership';
+  return d.data || [];
 }
 
 function makeAccUrl(hubId, projectId) {
@@ -506,7 +558,16 @@ async function loadHubs() {
     S.hubs = d.data||[];
     if (S.hubs.length===1) { scanHub({id:S.hubs[0].id,name:S.hubs[0].attributes.name}); return; }
     S.phase='hubs'; render();
-  } catch(e) { S.error='Connection failed — check your token. '+e.message; render(); }
+  } catch(e) {
+    if (String(e.message||'').includes('401')) {
+      localStorage.removeItem('rvt_tok');
+      S.token='';
+      S.error='Connection failed — token expired/invalid. Sign in again.';
+    } else {
+      S.error='Connection failed — check your token. '+e.message;
+    }
+    render();
+  }
 }
 
 // ─── DEMO DATA ────────────────────────────────────────────────────────────────
@@ -580,10 +641,15 @@ function rSetup() {
   const rcw = (sz='') => `<span class="type-pill tp-c4r" data-tip="Revit Cloud Workshared" style="${sz?'font-size:'+sz+';':''}"  >RCW</span>`;
   const rc  = (sz='') => `<span class="type-pill tp-cloud" data-tip="Revit Cloud Model" style="${sz?'font-size:'+sz+';':''}"  >RC</span>`;
 
-  return `<div class="setup-grid" style="display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start;max-width:1100px">
+  return `<div style="max-width:1100px">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn ${S.setupTab==='simple'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='simple';render()">Quick start</button>
+      <button class="btn ${S.setupTab==='instructions'?'btn-blue':'btn-g'} btn-sm" onclick="S.setupTab='instructions';render()">Instructions</button>
+    </div>
+    <div class="setup-grid" style="display:grid;grid-template-columns:${S.setupTab==='simple'?'1fr':'1fr 380px'};gap:20px;align-items:start">
 
     <!-- LEFT: explanation panel -->
-    <div>
+    <div style="${S.setupTab==='simple'?'display:none':''}">
       <h2 style="font-size:17px;font-weight:600;margin-bottom:5px">Revit Version Checker</h2>
       <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
         Scans every project in your ACC / Forma hub and separates
@@ -653,10 +719,20 @@ function rSetup() {
     <!-- RIGHT: setup guide + connect form -->
     <div>
       <div class="card" style="margin-bottom:12px;padding:18px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:14px">Connect to your ACC hub</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Connect to your ACC hub</div>
+        ${S.setupTab==='instructions' ? `<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;background:var(--blue-dim);border:0.5px solid rgba(20,115,230,0.28);padding:8px 10px;border-radius:var(--r)">
+          <strong style="color:var(--blue-light)">Two ways to connect</strong> — choose based on your access needs.
+          <div style="margin-top:4px">Option A (recommended): Sign in with Autodesk (PKCE, no secret).</div>
+          <div>Option B: Client Secret flow for app-level token workflows.</div>
+        </div>`:''}
+
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:600">Option A — Sign in with Autodesk</div>
+          <span style="font-size:10px;color:var(--blue-light);background:var(--blue-dim);border:0.5px solid rgba(20,115,230,0.32);padding:1px 7px;border-radius:10px">Recommended</span>
+        </div>
 
         <!-- Step-by-step setup guide -->
-        <div style="display:flex;flex-direction:column;gap:0;margin-bottom:16px">
+        <div style="display:${S.setupTab==='instructions'?'flex':'none'};flex-direction:column;gap:0;margin-bottom:16px">
 
           <div style="display:flex;gap:10px;align-items:flex-start;padding-bottom:14px;border-bottom:0.5px solid var(--border)">
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">1</div>
@@ -671,7 +747,7 @@ function rSetup() {
             <div style="width:20px;height:20px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0;margin-top:1px">2</div>
             <div>
               <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">Add app to your ACC hub</div>
-              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Account Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
+              <div style="font-size:11px;color:var(--muted);line-height:1.65">In ACC, go to <strong style="color:var(--text)">Hub Admin → Custom Integrations → Add custom integration</strong>. Paste your Client ID and grant hub access. This only needs to be done once per hub.</div>
             </div>
           </div>
 
@@ -692,11 +768,34 @@ function rSetup() {
 
         </div>
 
+        <div style="margin-bottom:10px">
+          <input id="cid"
+            type="text"
+            placeholder="Paste APS Client ID"
+            value="${esc(S.clientId)}"
+            style="width:100%;height:34px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 11px;font-size:12px;font-family:monospace;outline:none;transition:border-color 0.12s"
+            oninput="S.clientId=this.value.trim();localStorage.setItem('rvt_client_id',S.clientId)"
+          />
+        </div>
+
         <button class="btn btn-blue" id="bc" style="width:100%;justify-content:center;height:40px;font-size:13px;margin-bottom:8px">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="white"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-1 4h2v4H7V5zm0 5h2v2H7v-2z"/></svg>
           Sign in with Autodesk
         </button>
         <button class="btn btn-g" id="bd" style="width:100%;justify-content:center">Try demo data</button>
+
+        ${S.setupTab==='instructions' ? `
+        <div class="card" style="margin-top:12px;padding:14px;background:var(--surface2)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:13px;font-weight:600">Option B — Connect with Client Secret</div>
+            <span style="font-size:10px;color:var(--muted);background:var(--surface);border:0.5px solid var(--border2);padding:1px 7px;border-radius:10px">Full hub access*</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">For app-level access workflows. Requires a Traditional Web App or Service App and hub integration.</div>
+          <input id="cid2" type="text" placeholder="Client ID" value="${esc(S.clientId)}" style="width:100%;height:32px;margin-bottom:7px;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 10px;font-size:12px;font-family:monospace"/>
+          <input id="csec" type="password" placeholder="Client Secret" style="width:100%;height:32px;margin-bottom:8px;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 10px;font-size:12px;font-family:monospace"/>
+          <button class="btn btn-g" id="bcs" style="width:100%;justify-content:center">Connect with Client Secret</button>
+          <div style="margin-top:8px;font-size:10px;color:var(--hint);line-height:1.5">* Access still depends on your app registration + hub integration permissions.</div>
+        </div>` : ''}
 
         <div style="margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">
           <div style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--hint);line-height:1.7">
@@ -713,8 +812,7 @@ function rSetup() {
         <div style="font-size:11px;color:rgba(245,160,159,0.75);line-height:1.75">This is an open-source tool built by an individual Autodesk employee, not an official Autodesk product. It has not undergone a security audit or Autodesk's internal app review process. Scope is <code style="background:rgba(0,0,0,0.2);padding:1px 3px;border-radius:3px">data:read</code> only. Source code is public at <a href="https://github.com/tsb2127/revit-version-checker" target="_blank" style="color:inherit;text-decoration:underline">GitHub</a> for your IT team to review. By signing in you accept these terms.</div>
       </div>
     </div>
-
-  </div>`;
+  </div></div>`;
 }
 
 function rHubs() {
@@ -742,7 +840,8 @@ function rDash() {
 
   let rows = [...S.projects];
   if (S.search) { const q=S.search.toLowerCase(); rows=rows.filter(p=>p.name.toLowerCase().includes(q)); }
-  if (S.statusFilter!=='all') rows=rows.filter(p=>pStatus(p)===S.statusFilter);
+  const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+  if (!activeStatuses.includes('all')) rows=rows.filter(p=>activeStatuses.includes(pStatus(p)));
   rows.sort((a,b)=>{
     let av,bv;
     if      (S.sortCol==='name')  { av=a.name; bv=b.name; }
@@ -793,20 +892,23 @@ function rDash() {
         <div style="display:flex;align-items:center;gap:9px">
           <span class="ttitle">${esc(S.hub.name)}</span>
           <span class="cbadge">${rows.length} of ${S.projects.length} projects</span>
+          <span class="cbadge">${S.coverageMode==='hub-admin'?'Hub-wide (Hub Admin API)':'Membership-scoped (fallback API)'}</span>
         </div>
         <div class="tcontrols">
           <div class="sw">
             <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.7 10.3a6.5 6.5 0 10-1.4 1.4l3.85 3.85a1 1 0 001.4-1.4l-3.85-3.85zM6.5 11a4.5 4.5 0 110-9 4.5 4.5 0 010 9z"/></svg>
             <input class="sinput" placeholder="Search projects…" value="${esc(S.search)}" oninput="S.search=this.value;render()"/>
           </div>
-          <select class="fsel" onchange="S.statusFilter=this.value;render()">
-            <option value="all">All statuses</option>
-            <option value="critical" ${S.statusFilter==='critical'?'selected':''}>Critical (at risk)</option>
-            <option value="warn"     ${S.statusFilter==='warn'?'selected':''}>Outdated</option>
-            <option value="ok"       ${S.statusFilter==='ok'?'selected':''}>Current</option>
-            <option value="no-c4r"   ${S.statusFilter==='no-c4r'?'selected':''}>No workshared files</option>
+          <select class="fsel" multiple size="1" title="Ctrl/Cmd+click to select multiple statuses" onchange="S.statusFilter=[...this.selectedOptions].map(o=>o.value);if(!S.statusFilter.length)S.statusFilter=['all'];if(S.statusFilter.includes('all')&&S.statusFilter.length>1)S.statusFilter=S.statusFilter.filter(v=>v!=='all');render()">
+            <option value="all" ${S.statusFilter.includes('all')?'selected':''}>All statuses</option>
+            <option value="critical" ${S.statusFilter.includes('critical')?'selected':''}>Critical (at risk)</option>
+            <option value="warn"     ${S.statusFilter.includes('warn')?'selected':''}>Outdated</option>
+            <option value="ok"       ${S.statusFilter.includes('ok')?'selected':''}>Current</option>
+            <option value="no-c4r"   ${S.statusFilter.includes('no-c4r')?'selected':''}>No workshared files</option>
           </select>
           <button class="btn btn-g btn-sm" onclick="exportCsv()">Export CSV</button>
+          <button class="btn btn-g btn-sm" onclick="exportPdf()">Export PDF</button>
+          <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px"><input type="checkbox" ${S.exportFiltered?'checked':''} onchange="S.exportFiltered=this.checked">Filtered only</label>
           <button class="btn btn-g btn-sm" onclick="S.phase='hubs';render()">Change hub</button>
         </div>
       </div>
@@ -833,6 +935,7 @@ function rDash() {
         <span style="font-size:10px;font-weight:600;color:var(--hint);text-transform:uppercase;letter-spacing:0.08em;margin-right:4px">Legend:</span>
         <span class="legend-item"><span class="type-pill tp-c4r" data-tip="Revit Cloud Workshared">RCW</span> Version is locked — counted toward deprecation risk</span>
         <span class="legend-item"><span class="type-pill tp-cloud" data-tip="Revit Cloud Model">RC</span> No version lock — excluded from risk</span>
+        <span class="legend-item">API calls: ${S.scanStats.apiCalls} · retries: ${S.scanStats.retries} · throttles: ${S.scanStats.throttles}</span>
       </div>
     </div>`;
 }
@@ -995,6 +1098,21 @@ function bind() {
     startPKCE(cid);
   };
   const bd=document.getElementById('bd');if(bd)bd.onclick=demo;
+  const bcs=document.getElementById('bcs');
+  if(bcs)bcs.onclick=async()=>{
+    const cid=(document.getElementById('cid2')?.value||'').trim();
+    const cs =(document.getElementById('csec')?.value||'').trim();
+    if(!cid||!cs){S.error='Enter Client ID and Client Secret.';render();return;}
+    try{
+      const body=new URLSearchParams({grant_type:'client_credentials',scope:'data:read'});
+      const r=await fetch(OAUTH.tokenUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa(cid+':'+cs)},body});
+      const t=await r.json();
+      if(!r.ok||!t.access_token) throw new Error(t.error_description||r.statusText);
+      S.token=t.access_token; S.uname='App Token'; S.clientId=cid;
+      localStorage.setItem('rvt_tok',S.token); localStorage.setItem('rvt_uname',S.uname); localStorage.setItem('rvt_client_id',cid);
+      S.error=null; render(); loadHubs();
+    }catch(e){S.error='Client Secret sign-in failed: '+e.message; render();}
+  };
   const thresh=document.getElementById('thresh');
   if(thresh)thresh.onchange=()=>{S.threshold=parseInt(thresh.value);localStorage.setItem('rvt_thresh',S.threshold);};
   const bso=document.getElementById('b-signout');
@@ -1015,16 +1133,57 @@ window.setThresh= v => { S.threshold=v; localStorage.setItem('rvt_thresh',v); re
 window.exportCsv = () => {
   const gl=hubLatest();
   const rows=[['Project','C4R Version','C4R Files','At Risk (C4R ≤'+S.threshold+')','Cloud Files','Status','Last Modified','ACC URL']];
-  S.projects.forEach(p=>rows.push([p.name,p.c4rVersion||'',p.c4rCount,p.atRisk,p.cloudCount,pStatus(p),fDate(p.lastMod),p.accUrl||'']));
+  const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+  const filteredProjects = S.projects.filter(p => {
+    if (!S.exportFiltered) return true;
+    if (S.search && !p.name.toLowerCase().includes(S.search.toLowerCase())) return false;
+    if (!activeStatuses.includes('all') && !activeStatuses.includes(pStatus(p))) return false;
+    return true;
+  });
+  filteredProjects.forEach(p=>rows.push([p.name,p.c4rVersion||'',p.c4rCount,p.atRisk,p.cloudCount,pStatus(p),fDate(p.lastMod),p.accUrl||'']));
   rows.push([],[' --- C4R File Detail ---'],['Project','File','Version','At Risk','Path','Modified','By']);
-  S.projects.forEach(p=>(p.c4rFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',isAtRisk(f.version)?'YES':'no',f.path||'',f.modTime||'',f.modBy||''])));
+  filteredProjects.forEach(p=>(p.c4rFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',isAtRisk(f.version)?'YES':'no',f.path||'',f.modTime||'',f.modBy||''])));
   rows.push([],[' --- Cloud Storage Files (not counted toward risk) ---'],['Project','File','Version','Path','Modified','By']);
-  S.projects.forEach(p=>(p.cloudFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',f.path||'',f.modTime||'',f.modBy||''])));
+  filteredProjects.forEach(p=>(p.cloudFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',f.path||'',f.modTime||'',f.modBy||''])));
   const csv=rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
   const a=document.createElement('a');
   a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv);
   a.download='revit-hub-scan-'+new Date().toISOString().slice(0,10)+'.csv';
   a.click();
+};
+
+window.exportPdf = () => {
+  const rows = [...S.projects];
+  const filtered = rows.filter(p => {
+    if (S.search && !p.name.toLowerCase().includes(S.search.toLowerCase())) return false;
+    const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+    if (!activeStatuses.includes('all') && !activeStatuses.includes(pStatus(p))) return false;
+    return true;
+  });
+  const printedOn = new Date().toLocaleString();
+  const html = `
+  <html><head><title>Revit Hub Scan Report</title>
+  <style>
+    body{font-family:Arial,sans-serif;padding:24px;color:#111} h1{margin:0 0 8px} .meta{color:#555;margin-bottom:16px}
+    table{width:100%;border-collapse:collapse;font-size:12px} th,td{border:1px solid #ccc;padding:6px;text-align:left}
+    th{background:#f3f3f3} .section{margin-top:22px}
+  </style></head><body>
+    <h1>Revit Version Checker Report</h1>
+    <div class="meta">Generated: ${esc(printedOn)} | Threshold: ${S.threshold} | Filter: ${(Array.isArray(S.statusFilter)?S.statusFilter:[S.statusFilter]).join(', ')}</div>
+    <table><thead><tr><th>Project</th><th>C4R Version</th><th>C4R Files</th><th>At Risk</th><th>Cloud Files</th><th>Status</th><th>Last Modified</th></tr></thead>
+    <tbody>
+      ${filtered.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.c4rVersion||'—')}</td><td>${p.c4rCount||0}</td><td>${p.atRisk||0}</td><td>${p.cloudCount||0}</td><td>${esc(pStatus(p))}</td><td>${fDate(p.lastMod)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="section"><h3>Critical project details</h3>
+      ${filtered.filter(p=>pStatus(p)==='critical').map(p=>`<p><strong>${esc(p.name)}</strong>: ${p.atRisk||0} at-risk RCW model(s)</p>`).join('') || '<p>None</p>'}
+    </div>
+  </body></html>`;
+  const w = window.open('', '_blank');
+  if(!w) return alert('Pop-up blocked. Please allow pop-ups to export PDF.');
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  w.print();
 };
 
 // ─── OAUTH CALLBACK HANDLER ───────────────────────────────────────────────────
