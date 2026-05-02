@@ -41,6 +41,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Direct ACC links** — each project row links straight to that project in ACC
 - **CSV export** — exports project summary and full file detail, with at-risk flag per file
 - **Filtered export option** — choose whether CSV export follows active search/status filters
+- **Dual connect options** — Sign in with Autodesk (PKCE) or connect using Client ID + Client Secret (app token)
 - **One-click sign-in** — PKCE OAuth via Autodesk's official login page, no tokens to copy
 - **Saved Client ID** — stored in your browser so you only enter it once
 - **Demo mode** — try the full UI without an Autodesk account

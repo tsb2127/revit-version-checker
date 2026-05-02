@@ -559,7 +559,16 @@ async function loadHubs() {
     S.hubs = d.data||[];
     if (S.hubs.length===1) { scanHub({id:S.hubs[0].id,name:S.hubs[0].attributes.name}); return; }
     S.phase='hubs'; render();
-  } catch(e) { S.error='Connection failed — check your token. '+e.message; render(); }
+  } catch(e) {
+    if (String(e.message||'').includes('401')) {
+      localStorage.removeItem('rvt_tok');
+      S.token='';
+      S.error='Connection failed — token expired/invalid. Sign in again.';
+    } else {
+      S.error='Connection failed — check your token. '+e.message;
+    }
+    render();
+  }
 }
 
 // ─── DEMO DATA ────────────────────────────────────────────────────────────────
@@ -711,7 +720,17 @@ function rSetup() {
     <!-- RIGHT: setup guide + connect form -->
     <div>
       <div class="card" style="margin-bottom:12px;padding:18px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:14px">Connect to your ACC hub</div>
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Connect to your ACC hub</div>
+        ${S.setupTab==='instructions' ? `<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px;background:var(--blue-dim);border:0.5px solid rgba(20,115,230,0.28);padding:8px 10px;border-radius:var(--r)">
+          <strong style="color:var(--blue-light)">Two ways to connect</strong> — choose based on your access needs.
+          <div style="margin-top:4px">Option A (recommended): Sign in with Autodesk (PKCE, no secret).</div>
+          <div>Option B: Client Secret flow for app-level token workflows.</div>
+        </div>`:''}
+
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:600">Option A — Sign in with Autodesk</div>
+          <span style="font-size:10px;color:var(--blue-light);background:var(--blue-dim);border:0.5px solid rgba(20,115,230,0.32);padding:1px 7px;border-radius:10px">Recommended</span>
+        </div>
 
         <!-- Step-by-step setup guide -->
         <div style="display:${S.setupTab==='instructions'?'flex':'none'};flex-direction:column;gap:0;margin-bottom:16px">
@@ -750,11 +769,34 @@ function rSetup() {
 
         </div>
 
+        <div style="margin-bottom:10px">
+          <input id="cid"
+            type="text"
+            placeholder="Paste APS Client ID"
+            value="${esc(S.clientId)}"
+            style="width:100%;height:34px;background:var(--surface2);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 11px;font-size:12px;font-family:monospace;outline:none;transition:border-color 0.12s"
+            oninput="S.clientId=this.value.trim();localStorage.setItem('rvt_client_id',S.clientId)"
+          />
+        </div>
+
         <button class="btn btn-blue" id="bc" style="width:100%;justify-content:center;height:40px;font-size:13px;margin-bottom:8px">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="white"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-1 4h2v4H7V5zm0 5h2v2H7v-2z"/></svg>
           Sign in with Autodesk
         </button>
         <button class="btn btn-g" id="bd" style="width:100%;justify-content:center">Try demo data</button>
+
+        ${S.setupTab==='instructions' ? `
+        <div class="card" style="margin-top:12px;padding:14px;background:var(--surface2)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:13px;font-weight:600">Option B — Connect with Client Secret</div>
+            <span style="font-size:10px;color:var(--muted);background:var(--surface);border:0.5px solid var(--border2);padding:1px 7px;border-radius:10px">Full hub access*</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:8px">For app-level access workflows. Requires a Traditional Web App or Service App and hub integration.</div>
+          <input id="cid2" type="text" placeholder="Client ID" value="${esc(S.clientId)}" style="width:100%;height:32px;margin-bottom:7px;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 10px;font-size:12px;font-family:monospace"/>
+          <input id="csec" type="password" placeholder="Client Secret" style="width:100%;height:32px;margin-bottom:8px;background:var(--surface);border:0.5px solid var(--border2);border-radius:var(--r);color:var(--text);padding:0 10px;font-size:12px;font-family:monospace"/>
+          <button class="btn btn-g" id="bcs" style="width:100%;justify-content:center">Connect with Client Secret</button>
+          <div style="margin-top:8px;font-size:10px;color:var(--hint);line-height:1.5">* Access still depends on your app registration + hub integration permissions.</div>
+        </div>` : ''}
 
         <div style="margin-top:14px;padding-top:12px;border-top:0.5px solid var(--border)">
           <div style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--hint);line-height:1.7">
@@ -1057,6 +1099,21 @@ function bind() {
     startPKCE(cid);
   };
   const bd=document.getElementById('bd');if(bd)bd.onclick=demo;
+  const bcs=document.getElementById('bcs');
+  if(bcs)bcs.onclick=async()=>{
+    const cid=(document.getElementById('cid2')?.value||'').trim();
+    const cs =(document.getElementById('csec')?.value||'').trim();
+    if(!cid||!cs){S.error='Enter Client ID and Client Secret.';render();return;}
+    try{
+      const body=new URLSearchParams({grant_type:'client_credentials',scope:'data:read'});
+      const r=await fetch(OAUTH.tokenUrl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+btoa(cid+':'+cs)},body});
+      const t=await r.json();
+      if(!r.ok||!t.access_token) throw new Error(t.error_description||r.statusText);
+      S.token=t.access_token; S.uname='App Token'; S.clientId=cid;
+      localStorage.setItem('rvt_tok',S.token); localStorage.setItem('rvt_uname',S.uname); localStorage.setItem('rvt_client_id',cid);
+      S.error=null; render(); loadHubs();
+    }catch(e){S.error='Client Secret sign-in failed: '+e.message; render();}
+  };
   const thresh=document.getElementById('thresh');
   if(thresh)thresh.onchange=()=>{S.threshold=parseInt(thresh.value);localStorage.setItem('rvt_thresh',S.threshold);};
   const bso=document.getElementById('b-signout');
