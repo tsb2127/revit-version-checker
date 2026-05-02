@@ -188,6 +188,7 @@ If your organisation has strict policies about third-party OAuth applications ac
 - `revitProjectVersion` is only populated for **Revit Cloud Workshared** models. RC (non-workshared) uploads do not have a version lock and are not counted toward risk.
 - Large hubs with hundreds of projects and thousands of files will make many API calls and may take several minutes to scan. The APS Data Management API is free with no per-call cost.
 - For PKCE mode, each user needs their own APS app (free to create) registered as **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub (via Hub Admin).
+- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub (via Hub Admin). The connect screen walks through this in 3 steps.
 - Tokens expire after 1 hour — sign in again when prompted.
 - PKCE mode requires the APS app to be of type **Single-Page App** (not Traditional Web App).
 - Client Secret mode requires an app type that issues a client secret and should only be used if your security policy allows entering that secret in-browser.
