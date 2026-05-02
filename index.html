@@ -538,6 +538,7 @@ async function loadProjectsForHub(hubId) {
         offset += limit;
       }
       if (all.length) { S.coverageMode='hub-admin'; return all; }
+      if (all.length) return all;
     } catch(e) { /* fallback */ }
   }
   // Fallback: standard projects endpoint (may be membership-scoped for some users)
