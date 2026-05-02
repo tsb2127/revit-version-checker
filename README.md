@@ -32,6 +32,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Hub-level scan** — scans every project in your hub in one go, no project-by-project navigation
 - **RCW / RC separation** — correctly distinguishes workshared models from plain cloud uploads; only RCW files count toward risk
 - **Deprecation banner** — automatically flags projects with files on Revit 2021 or older (configurable threshold)
+- **Coverage mode indicator** — shows whether results are hub-wide (Hub Admin API) or membership-scoped fallback
 - **Configurable threshold** — set your own cutoff year (2019–2022) to get ahead of the deadline
 - **Per-project expand** — click any project row to see every RCW and RC file with version, path, and last modified
 - **Version colour badges** — green (latest in hub) → blue (1 behind) → amber (2 behind) → red (3+ behind)
@@ -39,6 +40,8 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Search + status filter** — find projects by name or filter to Critical / Outdated / Current
 - **Direct ACC links** — each project row links straight to that project in ACC
 - **CSV export** — exports project summary and full file detail, with at-risk flag per file
+- **Filtered export option** — choose whether CSV export follows active search/status filters
+- **Dual connect options** — Sign in with Autodesk (PKCE) or connect using Client ID + Client Secret (app token)
 - **One-click sign-in** — PKCE OAuth via Autodesk's official login page, no tokens to copy
 - **Saved Client ID** — stored in your browser so you only enter it once
 - **Demo mode** — try the full UI without an Autodesk account
@@ -65,26 +68,48 @@ The version is only shown and counted for RCW files. RC files are surfaced separ
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /project/v1/hubs` | List ACC hubs |
-| `GET /project/v1/hubs/{hubId}/projects` | List all projects in hub |
+| `GET /construction/admin/v1/accounts/{accountId}/projects` (preferred) | Hub-wide project list for hub admins |
+| `GET /project/v1/hubs/{hubId}/projects` (fallback) | List projects visible through Data Management API |
 | `GET /project/v1/hubs/{hubId}/projects/{projectId}/topFolders` | Get root folders |
 | `GET /data/v1/projects/{projectId}/folders/{folderId}/contents` | Recurse folder tree |
 | `GET /data/v1/projects/{projectId}/items/{itemId}/versions` | Read version + type metadata |
 
-All calls use a 3-legged token. No server-side component is needed — every API call is made directly from the browser.
+Calls use one of two token types depending on connection mode:
+
+- **Option A (PKCE sign-in):** 3-legged user token (`authorization_code` with PKCE)
+- **Option B (Client Secret):** app token (`client_credentials`)
+
+No server-side component is required for either mode in this implementation — API calls are made directly from the browser.
 
 ---
 
 ## Getting started
 
-Each user connects using their own APS app credentials. This means the app works for any ACC hub without a central whitelist — you control your own access.
+You can connect in two ways:
 
-### What you need
+1. **Option A — Sign in with Autodesk (PKCE, recommended)**  
+   User-based access, no client secret required.
+2. **Option B — Connect with Client Secret**  
+   App-token workflow using Client ID + Client Secret.
+
+### What you need (Option A — PKCE)
 
 1. **An APS app** — create one at [aps.autodesk.com](https://aps.autodesk.com) (free). Select **Desktop, Mobile, Single-Page App** as the type — not Traditional Web App
 2. **Your GitHub Pages URL set as the Callback URL** in the app settings
-3. **Your app added as a Custom Integration** in ACC Account Admin
+3. **Your app added as a Custom Integration** in ACC Hub Admin
 
-Full step-by-step instructions are built into the app's connect screen.
+
+
+### What you need (Option B — Client Secret)
+
+1. **An APS app** — create one at [aps.autodesk.com](https://aps.autodesk.com) with a type that supports client secret usage (for example Traditional Web App / Service App)
+2. **Client ID + Client Secret** from that app
+3. **Your app added as a Custom Integration** in ACC Hub Admin
+
+> Security note: Client Secret mode is available for advanced workflows, but entering secrets in a browser-only app has security trade-offs. Use with caution and according to your organisation's policy.
+
+Full step-by-step guidance for both modes is available on the app's connect screen.
+
 
 ### Use the hosted version
 
@@ -135,7 +160,7 @@ Your Client ID is saved in your browser so you only enter it once.
 **This is not an official Autodesk product.** It is an open-source tool built by an individual Autodesk employee in a personal capacity. Please read this before using it or sharing it with customers:
 
 - This app has **not** undergone a security audit, penetration test, or Autodesk's internal application review process
-- The token scope is `data:read` only — the app **cannot** write, modify, delete, or change anything in your ACC hub
+- Token scope defaults to `data:read` only — the app **cannot** write, modify, delete, or change anything in your ACC hub
 - No data is sent to any third-party server — all API calls go directly from your browser to Autodesk's servers
 - Your token is stored in your browser's `localStorage` and never transmitted anywhere except Autodesk's own API endpoints
 - The full source code is publicly available at this repository — your IT or security team can review exactly what the app does before use
@@ -162,9 +187,10 @@ If your organisation has strict policies about third-party OAuth applications ac
 
 - `revitProjectVersion` is only populated for **Revit Cloud Workshared** models. RC (non-workshared) uploads do not have a version lock and are not counted toward risk.
 - Large hubs with hundreds of projects and thousands of files will make many API calls and may take several minutes to scan. The APS Data Management API is free with no per-call cost.
-- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub. The connect screen walks through this in 3 steps.
+- For PKCE mode, each user needs their own APS app (free to create) registered as **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub (via Hub Admin).
 - Tokens expire after 1 hour — sign in again when prompted.
-- The app requires the APS app to be of type **Single-Page App** (not Traditional Web App) to support PKCE. Traditional Web App types will fail authentication.
+- PKCE mode requires the APS app to be of type **Single-Page App** (not Traditional Web App).
+- Client Secret mode requires an app type that issues a client secret and should only be used if your security policy allows entering that secret in-browser.
 
 ---
 
