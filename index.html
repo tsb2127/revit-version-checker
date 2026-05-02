@@ -330,6 +330,10 @@ const S = {
   expanded:new Set(),
   search:'',statusFilter:['all'],
   setupTab:'simple',
+  exportFiltered:true,
+  coverageMode:'unknown',
+  scanStats:{apiCalls:0,retries:0,throttles:0},
+  projectConcurrency:4,
   sortCol:'risk',sortDir:-1,
   threshold:parseInt(localStorage.getItem('rvt_thresh')||'2021'),
   error:null
@@ -340,9 +344,20 @@ const fDate = iso => iso ? new Date(iso).toLocaleDateString('en-US',{month:'shor
 const isAtRisk = v => v && parseInt(v) <= S.threshold;
 
 async function api(path) {
-  const r = await fetch(APS + path, {headers:{Authorization:'Bearer '+S.token}});
-  if (!r.ok) throw new Error(r.status+' '+r.statusText);
-  return r.json();
+  const maxRetries = 3;
+  for (let attempt=0; attempt<=maxRetries; attempt++) {
+    S.scanStats.apiCalls++;
+    const r = await fetch(APS + path, {headers:{Authorization:'Bearer '+S.token}});
+    if (r.ok) return r.json();
+    if ((r.status===429 || r.status>=500) && attempt<maxRetries) {
+      S.scanStats.retries++;
+      if (r.status===429) S.scanStats.throttles++;
+      const waitMs = 400 * Math.pow(2, attempt);
+      await new Promise(res=>setTimeout(res, waitMs));
+      continue;
+    }
+    throw new Error(r.status+' '+r.statusText);
+  }
 }
 
 function vClass(v, gl) {
@@ -452,6 +467,7 @@ function deriveProject(p) {
 async function scanHub(hub) {
   S.hub=hub; S.projects=[]; S.scanning=true; S.aborted=false;
   S.pct=0; S.pdone=0; S.error=null; S.phase='dash';
+  S.scanStats={apiCalls:0,retries:0,throttles:0};
   render();
 
   let raw=[];
@@ -469,9 +485,8 @@ async function scanHub(hub) {
   }));
   render();
 
-  for (let i=0; i<S.projects.length; i++) {
-    if (S.aborted) break;
-    const proj = S.projects[i];
+  async function scanOneProject(proj, idx) {
+    if (S.aborted) return;
     S.msg = proj.name;
     render();
     try {
@@ -486,10 +501,18 @@ async function scanHub(hub) {
     } catch(e) { proj.c4rFiles=[]; proj.cloudFiles=[]; }
     deriveProject(proj);
     proj.scanning=false;
-    S.pdone=i+1;
-    S.pct=Math.round(((i+1)/S.projects.length)*100);
+    S.pdone+=1;
+    S.pct=Math.round((S.pdone/S.projects.length)*100);
     render();
   }
+  let cursor = 0;
+  const workers = Array.from({length:Math.max(1, S.projectConcurrency)}, async () => {
+    while (!S.aborted && cursor < S.projects.length) {
+      const idx = cursor++;
+      await scanOneProject(S.projects[idx], idx);
+    }
+  });
+  await Promise.all(workers);
   S.scanning=false;
   render();
 }
@@ -514,11 +537,13 @@ async function loadProjectsForHub(hubId) {
         if (page.length < limit) break;
         offset += limit;
       }
+      if (all.length) { S.coverageMode='hub-admin'; return all; }
       if (all.length) return all;
     } catch(e) { /* fallback */ }
   }
   // Fallback: standard projects endpoint (may be membership-scoped for some users)
   const d = await api('/project/v1/hubs/'+hubId+'/projects');
+  S.coverageMode='membership';
   return d.data || [];
 }
 
@@ -826,6 +851,7 @@ function rDash() {
         <div style="display:flex;align-items:center;gap:9px">
           <span class="ttitle">${esc(S.hub.name)}</span>
           <span class="cbadge">${rows.length} of ${S.projects.length} projects</span>
+          <span class="cbadge">${S.coverageMode==='hub-admin'?'Hub-wide (Hub Admin API)':'Membership-scoped (fallback API)'}</span>
         </div>
         <div class="tcontrols">
           <div class="sw">
@@ -841,6 +867,7 @@ function rDash() {
           </select>
           <button class="btn btn-g btn-sm" onclick="exportCsv()">Export CSV</button>
           <button class="btn btn-g btn-sm" onclick="exportPdf()">Export PDF</button>
+          <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px"><input type="checkbox" ${S.exportFiltered?'checked':''} onchange="S.exportFiltered=this.checked">Filtered only</label>
           <button class="btn btn-g btn-sm" onclick="S.phase='hubs';render()">Change hub</button>
         </div>
       </div>
@@ -867,6 +894,7 @@ function rDash() {
         <span style="font-size:10px;font-weight:600;color:var(--hint);text-transform:uppercase;letter-spacing:0.08em;margin-right:4px">Legend:</span>
         <span class="legend-item"><span class="type-pill tp-c4r" data-tip="Revit Cloud Workshared">RCW</span> Version is locked — counted toward deprecation risk</span>
         <span class="legend-item"><span class="type-pill tp-cloud" data-tip="Revit Cloud Model">RC</span> No version lock — excluded from risk</span>
+        <span class="legend-item">API calls: ${S.scanStats.apiCalls} · retries: ${S.scanStats.retries} · throttles: ${S.scanStats.throttles}</span>
       </div>
     </div>`;
 }
@@ -1049,11 +1077,18 @@ window.setThresh= v => { S.threshold=v; localStorage.setItem('rvt_thresh',v); re
 window.exportCsv = () => {
   const gl=hubLatest();
   const rows=[['Project','C4R Version','C4R Files','At Risk (C4R ≤'+S.threshold+')','Cloud Files','Status','Last Modified','ACC URL']];
-  S.projects.forEach(p=>rows.push([p.name,p.c4rVersion||'',p.c4rCount,p.atRisk,p.cloudCount,pStatus(p),fDate(p.lastMod),p.accUrl||'']));
+  const activeStatuses = Array.isArray(S.statusFilter) ? S.statusFilter : [S.statusFilter];
+  const filteredProjects = S.projects.filter(p => {
+    if (!S.exportFiltered) return true;
+    if (S.search && !p.name.toLowerCase().includes(S.search.toLowerCase())) return false;
+    if (!activeStatuses.includes('all') && !activeStatuses.includes(pStatus(p))) return false;
+    return true;
+  });
+  filteredProjects.forEach(p=>rows.push([p.name,p.c4rVersion||'',p.c4rCount,p.atRisk,p.cloudCount,pStatus(p),fDate(p.lastMod),p.accUrl||'']));
   rows.push([],[' --- C4R File Detail ---'],['Project','File','Version','At Risk','Path','Modified','By']);
-  S.projects.forEach(p=>(p.c4rFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',isAtRisk(f.version)?'YES':'no',f.path||'',f.modTime||'',f.modBy||''])));
+  filteredProjects.forEach(p=>(p.c4rFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',isAtRisk(f.version)?'YES':'no',f.path||'',f.modTime||'',f.modBy||''])));
   rows.push([],[' --- Cloud Storage Files (not counted toward risk) ---'],['Project','File','Version','Path','Modified','By']);
-  S.projects.forEach(p=>(p.cloudFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',f.path||'',f.modTime||'',f.modBy||''])));
+  filteredProjects.forEach(p=>(p.cloudFiles||[]).forEach(f=>rows.push([p.name,f.name,f.version||'',f.path||'',f.modTime||'',f.modBy||''])));
   const csv=rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n');
   const a=document.createElement('a');
   a.href='data:text/csv;charset=utf-8,\uFEFF'+encodeURIComponent(csv);

@@ -32,6 +32,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Hub-level scan** — scans every project in your hub in one go, no project-by-project navigation
 - **RCW / RC separation** — correctly distinguishes workshared models from plain cloud uploads; only RCW files count toward risk
 - **Deprecation banner** — automatically flags projects with files on Revit 2021 or older (configurable threshold)
+- **Coverage mode indicator** — shows whether results are hub-wide (Hub Admin API) or membership-scoped fallback
 - **Configurable threshold** — set your own cutoff year (2019–2022) to get ahead of the deadline
 - **Per-project expand** — click any project row to see every RCW and RC file with version, path, and last modified
 - **Version colour badges** — green (latest in hub) → blue (1 behind) → amber (2 behind) → red (3+ behind)
@@ -39,6 +40,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Search + status filter** — find projects by name or filter to Critical / Outdated / Current
 - **Direct ACC links** — each project row links straight to that project in ACC
 - **CSV export** — exports project summary and full file detail, with at-risk flag per file
+- **Filtered export option** — choose whether CSV export follows active search/status filters
 - **One-click sign-in** — PKCE OAuth via Autodesk's official login page, no tokens to copy
 - **Saved Client ID** — stored in your browser so you only enter it once
 - **Demo mode** — try the full UI without an Autodesk account
