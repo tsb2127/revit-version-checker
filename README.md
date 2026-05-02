@@ -32,6 +32,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Hub-level scan** — scans every project in your hub in one go, no project-by-project navigation
 - **RCW / RC separation** — correctly distinguishes workshared models from plain cloud uploads; only RCW files count toward risk
 - **Deprecation banner** — automatically flags projects with files on Revit 2021 or older (configurable threshold)
+- **Coverage mode indicator** — shows whether results are hub-wide (Hub Admin API) or membership-scoped fallback
 - **Configurable threshold** — set your own cutoff year (2019–2022) to get ahead of the deadline
 - **Per-project expand** — click any project row to see every RCW and RC file with version, path, and last modified
 - **Version colour badges** — green (latest in hub) → blue (1 behind) → amber (2 behind) → red (3+ behind)
@@ -39,6 +40,7 @@ Detection is done via `attributes.extension.type` — if it contains `C4RModel`,
 - **Search + status filter** — find projects by name or filter to Critical / Outdated / Current
 - **Direct ACC links** — each project row links straight to that project in ACC
 - **CSV export** — exports project summary and full file detail, with at-risk flag per file
+- **Filtered export option** — choose whether CSV export follows active search/status filters
 - **One-click sign-in** — PKCE OAuth via Autodesk's official login page, no tokens to copy
 - **Saved Client ID** — stored in your browser so you only enter it once
 - **Demo mode** — try the full UI without an Autodesk account
@@ -65,7 +67,8 @@ The version is only shown and counted for RCW files. RC files are surfaced separ
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /project/v1/hubs` | List ACC hubs |
-| `GET /project/v1/hubs/{hubId}/projects` | List all projects in hub |
+| `GET /construction/admin/v1/accounts/{accountId}/projects` (preferred) | Hub-wide project list for hub admins |
+| `GET /project/v1/hubs/{hubId}/projects` (fallback) | List projects visible through Data Management API |
 | `GET /project/v1/hubs/{hubId}/projects/{projectId}/topFolders` | Get root folders |
 | `GET /data/v1/projects/{projectId}/folders/{folderId}/contents` | Recurse folder tree |
 | `GET /data/v1/projects/{projectId}/items/{itemId}/versions` | Read version + type metadata |
@@ -82,7 +85,7 @@ Each user connects using their own APS app credentials. This means the app works
 
 1. **An APS app** — create one at [aps.autodesk.com](https://aps.autodesk.com) (free). Select **Desktop, Mobile, Single-Page App** as the type — not Traditional Web App
 2. **Your GitHub Pages URL set as the Callback URL** in the app settings
-3. **Your app added as a Custom Integration** in ACC Account Admin
+3. **Your app added as a Custom Integration** in ACC Hub Admin
 
 Full step-by-step instructions are built into the app's connect screen.
 
@@ -162,7 +165,7 @@ If your organisation has strict policies about third-party OAuth applications ac
 
 - `revitProjectVersion` is only populated for **Revit Cloud Workshared** models. RC (non-workshared) uploads do not have a version lock and are not counted toward risk.
 - Large hubs with hundreds of projects and thousands of files will make many API calls and may take several minutes to scan. The APS Data Management API is free with no per-call cost.
-- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub. The connect screen walks through this in 3 steps.
+- Each user needs their own APS app (free to create) registered as a **Desktop, Mobile, Single-Page App** type, with the app added as a Custom Integration in their ACC hub (via Hub Admin). The connect screen walks through this in 3 steps.
 - Tokens expire after 1 hour — sign in again when prompted.
 - The app requires the APS app to be of type **Single-Page App** (not Traditional Web App) to support PKCE. Traditional Web App types will fail authentication.
 
