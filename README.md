@@ -4,6 +4,9 @@ A free, zero-backend hub-level dashboard for scanning Revit model versions acros
 
 ![Screenshot](screenshot.png)
 
+
+This code is provided by Autodesk for evaluation purposes only, as an example of what is possible with the Autodesk platform and APIs. THIS CODE IS NOT INTENDED FOR USE IN PRODUCTION. Autodesk makes no representations, warranties, or commitments about the code. This code is not fully tested and may include errors or faults that may cause total data loss or system failure.
+
 ---
 
 ## Why this exists
